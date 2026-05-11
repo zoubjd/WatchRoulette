@@ -84,14 +84,13 @@ export function FeaturedPickModal({
                   transition={{ duration: 0.45, repeat: Infinity, ease: "easeInOut" }}
                 >
                   {flickerPosterUrl ? (
-                    <Image
-                      src={flickerPosterUrl}
-                      alt=""
-                      fill
-                      sizes="240px"
-                      className="object-cover"
-                      unoptimized={!flickerPosterUrl.includes("image.tmdb.org")}
-                    />
+                    <img
+                    src={flickerPosterUrl}
+                    alt=""
+                    loading="eager"
+                    decoding="async"
+                    className="h-full w-full object-cover"
+                  />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-600">
                       <Sparkles className="h-12 w-12 animate-pulse" aria-hidden />
@@ -118,13 +117,12 @@ export function FeaturedPickModal({
               >
                 {backdropSrc ? (
                   <div className="pointer-events-none absolute inset-0">
-                    <Image
+                    <img
                       src={backdropSrc}
                       alt=""
-                      fill
-                      sizes="100vw"
-                      className="object-cover opacity-35 blur-2xl saturate-150"
-                      unoptimized={!backdropSrc.includes("image.tmdb.org")}
+                      loading="eager"
+                      decoding="async"
+                      className="absolute inset-0 h-full w-full object-cover opacity-35 blur-2xl saturate-150"
                     />
                   </div>
                 ) : (
@@ -150,15 +148,13 @@ export function FeaturedPickModal({
                     <div className="overflow-hidden rounded-2xl shadow-2xl shadow-black/70 ring-1 ring-white/15">
                       <div className="relative aspect-[2/3] w-full bg-zinc-900">
                         {movie.posterUrl ? (
-                          <Image
-                            src={movie.posterUrl}
-                            alt=""
-                            fill
-                            priority
-                            sizes="220px"
-                            className="object-cover"
-                            unoptimized={!movie.posterUrl.includes("image.tmdb.org")}
-                          />
+                          <img
+                          src={movie.posterUrl}
+                          alt={movie.title}
+                          loading="eager"
+                          decoding="async"
+                          className="h-full w-full object-cover"
+                        />
                         ) : (
                           <div className="flex h-full items-center justify-center text-zinc-600">
                             <Sparkles className="h-10 w-10" aria-hidden />

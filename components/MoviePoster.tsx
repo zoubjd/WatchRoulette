@@ -27,7 +27,7 @@ export function MoviePoster({
       optimized = false;
     }
 
-    return (
+    /*return (
       <div className={`relative overflow-hidden rounded-lg bg-zinc-900 ${className}`}>
         <Image
           src={movie.posterUrl}
@@ -40,6 +40,15 @@ export function MoviePoster({
         />
         <span className="sr-only">{movie.title} poster</span>
       </div>
+    );*/
+    return (
+      <img
+        src={movie.posterUrl}
+        alt={movie.title}
+        loading="lazy"
+        decoding="async"
+        className={`h-full w-full object-cover ${className}`}
+      />
     );
   }
 
