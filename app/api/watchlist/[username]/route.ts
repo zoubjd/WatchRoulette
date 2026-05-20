@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { enrichMovies } from "@/lib/enrichMovies";
-import { scrapeLetterboxdWatchlist } from "@/lib/scraper";
+import { scrapeLetterboxd } from "@/lib/scraper";
 
 export async function GET(
   _request: Request,
@@ -10,10 +10,10 @@ export async function GET(
   const username = decodeURIComponent(raw ?? "").trim();
 
   if (!username) {
-    return NextResponse.json({ error: "Username required" }, { status: 400 });
+    return NextResponse.json({ error: "Input required" }, { status: 400 });
   }
 
-  const scraped = await scrapeLetterboxdWatchlist(username);
+  const scraped = await scrapeLetterboxd(username);
 
   if (!scraped.ok) {
     if (scraped.code === "empty") {
@@ -51,10 +51,10 @@ export async function GET(
         { status: 200 },
       );
     }
-    return NextResponse.json({ movies });
+    return NextResponse.json({ movies, source: scraped.source, meta: scraped.meta });
   } catch {
     return NextResponse.json(
-      { error: "Failed to enrich watchlist with movie databases." },
+      { error: "Failed to enrich list with movie databases." },
       { status: 502 },
     );
   }

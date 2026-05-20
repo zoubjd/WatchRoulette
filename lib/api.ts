@@ -7,7 +7,7 @@ export type FetchWatchlistResult =
 export async function fetchWatchlist(username: string): Promise<FetchWatchlistResult> {
   const trimmed = username.trim();
   if (!trimmed) {
-    return { ok: false, error: "invalid", message: "Enter a Letterboxd username." };
+    return { ok: false, error: "invalid", message: "Enter a Letterboxd username, watchlist, or list URL." };
   }
 
   const path = `/api/watchlist/${encodeURIComponent(trimmed)}`;
@@ -50,7 +50,7 @@ export async function fetchWatchlist(username: string): Promise<FetchWatchlistRe
       message:
         isRecord(body) && typeof body.error === "string"
           ? body.error
-          : "This watchlist is private or unavailable.",
+          : "This list is private or unavailable.",
     };
   }
 
@@ -77,7 +77,7 @@ export async function fetchWatchlist(username: string): Promise<FetchWatchlistRe
     const msg =
       isRecord(body) && typeof body.error === "string"
         ? body.error
-        : "Could not load the watchlist. Try again in a moment.";
+        : "Could not load the list. Try again in a moment.";
     return { ok: false, error: "server", message: msg };
   }
 
@@ -86,7 +86,7 @@ export async function fetchWatchlist(username: string): Promise<FetchWatchlistRe
     const hint =
       isRecord(body) && typeof body.error === "string"
         ? body.error
-        : "This watchlist is empty — add films on Letterboxd, then come back.";
+        : "This list is empty — try a different watchlist or curated list.";
     return {
       ok: false,
       error: "empty",

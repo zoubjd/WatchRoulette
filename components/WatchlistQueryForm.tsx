@@ -27,13 +27,13 @@ export function WatchlistQueryForm({
       }}
     >
       <label className="sr-only" htmlFor="lb-username">
-        Letterboxd username
+        Letterboxd username or list URL
       </label>
       <input
         id="lb-username"
         name="username"
         autoComplete="username"
-        placeholder="Letterboxd username"
+        placeholder="Username, watchlist, or list URL"
         value={username}
         onChange={(e) => onUsernameChange(e.target.value)}
         disabled={loading}
@@ -52,7 +52,7 @@ export function WatchlistQueryForm({
             Working…
           </>
         ) : (
-          "Fetch watchlist"
+          "Fetch list"
         )}
       </motion.button>
     </motion.form>

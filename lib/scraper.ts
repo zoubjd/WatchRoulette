@@ -2,19 +2,46 @@ import * as cheerio from "cheerio";
 
 const LETTERBOXD_ORIGIN = "https://letterboxd.com";
 
-/** One row from the public watchlist HTML only (no posters/ratings from Letterboxd). */
-export type WatchlistScrapeEntry = {
+/**
+ * Shared movie entry extracted from Letterboxd HTML.
+ * We ONLY trust:
+ * - title
+ * - year
+ * - slug
+ * - Letterboxd URL
+ *
+ * Posters/ratings come later from TMDB + OMDb.
+ */
+export type LetterboxdScrapeEntry = {
   slug: string;
   title: string;
   year?: number;
   letterboxdUrl: string;
 };
 
-export type ScrapeWatchlistResult =
-  | { ok: true; entries: WatchlistScrapeEntry[] }
+export type ScrapeLetterboxdResult =
+  | {
+      ok: true;
+      entries: LetterboxdScrapeEntry[];
+      source:
+        | "watchlist"
+        | "list";
+      meta?: {
+        totalPages: number;
+        truncated: boolean;
+      };
+    }
   | {
       ok: false;
-      code: "not_found" | "private" | "empty" | "blocked" | "rate_limited" | "parse_error" | "network";
+      code:
+        | "not_found"
+        | "private"
+        | "empty"
+        | "blocked"
+        | "rate_limited"
+        | "parse_error"
+        | "network";
+
       message: string;
     };
 
@@ -26,7 +53,25 @@ const FETCH_HEADERS: HeadersInit = {
 };
 
 const PAGE_DELAY_MS = 450;
-const MAX_PAGES = 80;
+
+/**
+ * HARD SAFETY LIMIT
+ *
+ * Some Letterboxd lists contain:
+ * - thousands
+ * - tens of thousands
+ * of movies.
+ *
+ * We NEVER want to fully scrape gigantic lists.
+ */
+const MAX_PAGES = 120;
+
+/**
+ * For gigantic lists:
+ * we scrape all pages
+ * BUT only keep a randomized subset.
+ */
+const MAX_MOVIES = 250;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,73 +81,235 @@ function isValidUsername(username: string): boolean {
   return /^[a-zA-Z0-9_-]{1,64}$/.test(username);
 }
 
-function watchlistPageUrl(username: string, page: number): string {
-  const u = encodeURIComponent(username);
-  if (page <= 1) return `${LETTERBOXD_ORIGIN}/${u}/watchlist/`;
-  return `${LETTERBOXD_ORIGIN}/${u}/watchlist/page/${page}/`;
+function normalizeInput(input: string): string {
+  return input.trim();
 }
 
-function splitTitleYear(fullDisplay: string): { title: string; year?: number } {
+type ScrapeTarget =
+  | { source: "watchlist"; username: string }
+  | { source: "list"; baseUrl: string };
+
+type ParsedInput =
+  | { ok: true; target: ScrapeTarget }
+  | { ok: false; result: ScrapeLetterboxdResult & { ok: false } };
+
+function isBoxdShortLink(input: string): boolean {
+  return /^(?:https?:\/\/)?boxd\.it\//i.test(input);
+}
+
+function isLetterboxdUrl(input: string): boolean {
+  return /(?:https?:\/\/)?(?:www\.)?letterboxd\.com\//i.test(input);
+}
+
+function normalizeLetterboxdUrl(input: string): string {
+  const trimmed = input.trim();
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\/+$/, "") + "/";
+  }
+
+  const path = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return `${LETTERBOXD_ORIGIN}${path}`.replace(/\/+$/, "") + "/";
+}
+
+function extractWatchlistUsername(url: string): string | null {
+  const m = url.match(
+    /letterboxd\.com\/([a-zA-Z0-9_-]{1,64})\/watchlist(?:\/|$)/i,
+  );
+  return m?.[1] ?? null;
+}
+
+function extractListBaseUrl(url: string): string | null {
+  const m = url.match(
+    /^(https?:\/\/(?:www\.)?letterboxd\.com\/[a-zA-Z0-9_-]{1,64}\/list\/[a-zA-Z0-9_-]+)\/?(?:page\/\d+\/)?/i,
+  );
+
+  if (!m?.[1]) return null;
+
+  return `${m[1].replace(/\/+$/, "")}/`;
+}
+
+async function resolveShortLink(
+  url: string,
+): Promise<{ ok: true; url: string } | { ok: false; result: ScrapeLetterboxdResult & { ok: false } }> {
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: FETCH_HEADERS,
+      cache: "no-store",
+      redirect: "follow",
+    });
+
+    if (res.status === 404) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          code: "not_found",
+          message: "That shortened Letterboxd link was not found.",
+        },
+      };
+    }
+
+    if (res.status === 429) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          code: "rate_limited",
+          message: "Letterboxd rate-limited this request. Try again later.",
+        },
+      };
+    }
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          code: "network",
+          message: "Could not resolve the shortened Letterboxd link.",
+        },
+      };
+    }
+
+    return { ok: true, url: res.url };
+  } catch {
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        code: "network",
+        message: "Could not resolve the shortened Letterboxd link.",
+      },
+    };
+  }
+}
+
+async function parseInput(raw: string): Promise<ParsedInput> {
+  let input = normalizeInput(raw);
+
+  if (!input) {
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        code: "parse_error",
+        message: "A Letterboxd username, watchlist URL, or list URL is required.",
+      },
+    };
+  }
+
+  if (isBoxdShortLink(input)) {
+    const shortUrl = /^https?:\/\//i.test(input) ? input : `https://${input}`;
+    const resolved = await resolveShortLink(shortUrl);
+    if (!resolved.ok) {
+      return { ok: false, result: resolved.result };
+    }
+    input = resolved.url;
+  }
+
+  if (input.includes("/watchlist/") || (isLetterboxdUrl(input) && input.includes("/watchlist"))) {
+    const url = normalizeLetterboxdUrl(input);
+    const username = extractWatchlistUsername(url);
+
+    if (!username || !isValidUsername(username)) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          code: "parse_error",
+          message: "Invalid Letterboxd watchlist URL.",
+        },
+      };
+    }
+
+    return { ok: true, target: { source: "watchlist", username } };
+  }
+
+  if (input.includes("/list/")) {
+    const url = normalizeLetterboxdUrl(input);
+    const baseUrl = extractListBaseUrl(url);
+
+    if (!baseUrl) {
+      return {
+        ok: false,
+        result: {
+          ok: false,
+          code: "parse_error",
+          message: "Invalid Letterboxd list URL.",
+        },
+      };
+    }
+
+    return { ok: true, target: { source: "list", baseUrl } };
+  }
+
+  if (isLetterboxdUrl(input)) {
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        code: "parse_error",
+        message: "Unsupported Letterboxd URL. Use a watchlist or list link.",
+      },
+    };
+  }
+
+  if (!isValidUsername(input)) {
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        code: "parse_error",
+        message: "Invalid Letterboxd username.",
+      },
+    };
+  }
+
+  return { ok: true, target: { source: "watchlist", username: input } };
+}
+
+function splitTitleYear(fullDisplay: string): {
+  title: string;
+  year?: number;
+} {
   const trimmed = fullDisplay.trim();
+
   const m = trimmed.match(/\((\d{4})\)\s*$/);
-  if (!m || m.index === undefined) return { title: trimmed };
+
+  if (!m || m.index === undefined) {
+    return { title: trimmed };
+  }
+
   const title = trimmed.slice(0, m.index).trim();
+
   const y = Number.parseInt(m[1], 10);
-  return title ? { title, year: Number.isFinite(y) ? y : undefined } : { title: trimmed };
+
+  return {
+    title,
+    year: Number.isFinite(y) ? y : undefined,
+  };
 }
 
-function absoluteFilmUrl(link: string | undefined, slug: string): string {
+function absoluteFilmUrl(
+  link: string | undefined,
+  slug: string,
+): string {
   if (link?.trim()) {
-    const path = link.startsWith("/") ? link : `/${link}`;
+    const path = link.startsWith("/")
+      ? link
+      : `/${link}`;
+
     return `${LETTERBOXD_ORIGIN}${path}`;
   }
+
   return `${LETTERBOXD_ORIGIN}/film/${slug}/`;
-}
-
-function parseEntriesFromHtml(html: string): WatchlistScrapeEntry[] {
-  const $ = cheerio.load(html);
-  const out: WatchlistScrapeEntry[] = [];
-
-  $('div[data-component-class="LazyPoster"]').each((_, el) => {
-    const node = $(el);
-    const slug = node.attr("data-item-slug")?.trim();
-    if (!slug) return;
-
-    const full =
-      node.attr("data-item-full-display-name")?.trim() ||
-      node.attr("data-item-name")?.trim() ||
-      "";
-    if (!full) return;
-
-    const { title, year } = splitTitleYear(full);
-    if (!title) return;
-
-    const link = node.attr("data-item-link") ?? node.attr("data-target-link");
-    const letterboxdUrl = absoluteFilmUrl(link, slug);
-
-    out.push({ slug, title, year, letterboxdUrl });
-  });
-
-  return out;
-}
-
-function maxPaginationPage(html: string, username: string): number {
-  const $ = cheerio.load(html);
-  let max = 1;
-  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`/${escaped}/watchlist/page/(\\d+)/`, "i");
-
-  $(".pagination a[href]").each((_, el) => {
-    const href = $(el).attr("href") ?? "";
-    const m = href.match(re);
-    if (m) max = Math.max(max, Number.parseInt(m[1], 10));
-  });
-
-  return Math.max(1, max);
 }
 
 function detectBlockOrChallenge(html: string): boolean {
   const h = html.slice(0, 12000).toLowerCase();
+
   return (
     h.includes("cf-mitigated") ||
     h.includes("cf-browser-verification") ||
@@ -114,6 +321,7 @@ function detectBlockOrChallenge(html: string): boolean {
 
 function detectPrivateOrHidden(html: string): boolean {
   const lower = html.toLowerCase();
+
   return (
     lower.includes("watchlist is private") ||
     lower.includes("this watchlist is private") ||
@@ -124,16 +332,125 @@ function detectPrivateOrHidden(html: string): boolean {
   );
 }
 
-function mergeEntries(rows: WatchlistScrapeEntry[]): WatchlistScrapeEntry[] {
-  const bySlug = new Map<string, WatchlistScrapeEntry>();
+function parseEntriesFromHtml(
+  html: string,
+): LetterboxdScrapeEntry[] {
+  const $ = cheerio.load(html);
+
+  const out: LetterboxdScrapeEntry[] = [];
+
+  $('div[data-component-class="LazyPoster"]').each((_, el) => {
+    const node = $(el);
+
+    const slug = node
+      .attr("data-item-slug")
+      ?.trim();
+
+    if (!slug) return;
+
+    const full =
+      node
+        .attr("data-item-full-display-name")
+        ?.trim() ||
+      node.attr("data-item-name")?.trim() ||
+      "";
+
+    if (!full) return;
+
+    const { title, year } =
+      splitTitleYear(full);
+
+    if (!title) return;
+
+    const link =
+      node.attr("data-item-link") ??
+      node.attr("data-target-link");
+
+    const letterboxdUrl =
+      absoluteFilmUrl(link, slug);
+
+    out.push({
+      slug,
+      title,
+      year,
+      letterboxdUrl,
+    });
+  });
+
+  return out;
+}
+
+function mergeEntries(
+  rows: LetterboxdScrapeEntry[],
+): LetterboxdScrapeEntry[] {
+  const bySlug = new Map<
+    string,
+    LetterboxdScrapeEntry
+  >();
+
   for (const row of rows) {
     bySlug.set(row.slug, row);
   }
+
   return [...bySlug.values()];
 }
 
-async function fetchWatchlistHtml(username: string, page: number): Promise<Response> {
-  const url = watchlistPageUrl(username, page);
+function shuffle<T>(arr: T[]): T[] {
+  const copy = [...arr];
+
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(
+      Math.random() * (i + 1),
+    );
+
+    [copy[i], copy[j]] = [
+      copy[j],
+      copy[i],
+    ];
+  }
+
+  return copy;
+}
+
+/**
+ * WATCHLIST URLS
+ */
+function watchlistPageUrl(
+  username: string,
+  page: number,
+): string {
+  const u = encodeURIComponent(username);
+
+  if (page <= 1) {
+    return `${LETTERBOXD_ORIGIN}/${u}/watchlist/`;
+  }
+
+  return `${LETTERBOXD_ORIGIN}/${u}/watchlist/page/${page}/`;
+}
+
+/**
+ * LIST URLS
+ *
+ * Example:
+ * /user/list/cyberpunk-films/
+ * /user/list/cyberpunk-films/page/2/
+ */
+function listPageUrl(
+  baseUrl: string,
+  page: number,
+): string {
+  const clean = baseUrl.endsWith("/")
+    ? baseUrl
+    : `${baseUrl}/`;
+
+  if (page <= 1) return clean;
+
+  return `${clean}page/${page}/`;
+}
+
+async function fetchHtml(
+  url: string,
+): Promise<Response> {
   return fetch(url, {
     method: "GET",
     headers: FETCH_HEADERS,
@@ -142,30 +459,69 @@ async function fetchWatchlistHtml(username: string, page: number): Promise<Respo
   });
 }
 
+function extractPaginationPages(
+  html: string,
+): number {
+  const $ = cheerio.load(html);
+
+  let max = 1;
+
+  $(".pagination a[href]").each((_, el) => {
+    const href =
+      $(el).attr("href") ?? "";
+
+    const m = href.match(
+      /\/page\/(\d+)\//i,
+    );
+
+    if (m) {
+      max = Math.max(
+        max,
+        Number.parseInt(m[1], 10),
+      );
+    }
+  });
+
+  return Math.max(1, max);
+}
+
 /**
- * Fetches and parses a public Letterboxd watchlist (paginated, watchlist URL only).
+ * MAIN SCRAPER
+ *
+ * Supports:
+ * - usernames
+ * - watchlist URLs
+ * - curated list URLs
+ * - boxd.it short links
  */
-export async function scrapeLetterboxdWatchlist(rawUsername: string): Promise<ScrapeWatchlistResult> {
-  const username = rawUsername.trim();
-  if (!username) {
-    return { ok: false, code: "parse_error", message: "Username is required." };
-  }
-  if (!isValidUsername(username)) {
-    return {
-      ok: false,
-      code: "parse_error",
-      message: "Username may only contain letters, numbers, underscores, and hyphens.",
-    };
+export async function scrapeLetterboxd(
+  rawInput: string,
+): Promise<ScrapeLetterboxdResult> {
+  const parsed = await parseInput(rawInput);
+
+  if (!parsed.ok) {
+    return parsed.result;
   }
 
+  const { target } = parsed;
+  const type = target.source;
+
+  const firstUrl =
+    type === "watchlist"
+      ? watchlistPageUrl(target.username, 1)
+      : listPageUrl(target.baseUrl, 1);
+
   let firstRes: Response;
+
   try {
-    firstRes = await fetchWatchlistHtml(username, 1);
+    firstRes =
+      await fetchHtml(firstUrl);
   } catch {
     return {
       ok: false,
       code: "network",
-      message: "Could not reach Letterboxd. Check your connection and try again.",
+      message:
+        "Could not reach Letterboxd.",
     };
   }
 
@@ -173,7 +529,10 @@ export async function scrapeLetterboxdWatchlist(rawUsername: string): Promise<Sc
     return {
       ok: false,
       code: "not_found",
-      message: "That Letterboxd member was not found.",
+      message:
+        type === "watchlist"
+          ? "That Letterboxd member was not found."
+          : "That Letterboxd list was not found.",
     };
   }
 
@@ -181,7 +540,8 @@ export async function scrapeLetterboxdWatchlist(rawUsername: string): Promise<Sc
     return {
       ok: false,
       code: "rate_limited",
-      message: "Letterboxd rate-limited this request. Wait a minute and try again.",
+      message:
+        "Letterboxd rate-limited this request. Try again later.",
     };
   }
 
@@ -189,61 +549,141 @@ export async function scrapeLetterboxdWatchlist(rawUsername: string): Promise<Sc
     return {
       ok: false,
       code: "blocked",
-      message: `Letterboxd returned an error (${firstRes.status}). Try again later.`,
+      message: `Letterboxd returned ${firstRes.status}.`,
     };
   }
 
-  const firstHtml = await firstRes.text();
+  const firstHtml =
+    await firstRes.text();
 
-  if (detectBlockOrChallenge(firstHtml)) {
+  if (
+    detectBlockOrChallenge(
+      firstHtml,
+    )
+  ) {
     return {
       ok: false,
       code: "blocked",
       message:
-        "Letterboxd blocked automated access (often Cloudflare). Try again in a few minutes or from another network.",
+        "Letterboxd blocked automated access.",
     };
   }
 
-  if (detectPrivateOrHidden(firstHtml)) {
+  if (
+    detectPrivateOrHidden(
+      firstHtml,
+    )
+  ) {
     return {
       ok: false,
       code: "private",
-      message: "This watchlist is private or hidden. Only public watchlists can be loaded.",
+      message:
+        "This content is private.",
     };
   }
 
-  const firstRows = parseEntriesFromHtml(firstHtml);
-  const maxPage = maxPaginationPage(firstHtml, username);
-  const cappedMax = Math.min(maxPage, MAX_PAGES);
+  const firstRows =
+    parseEntriesFromHtml(firstHtml);
 
-  const allRows: WatchlistScrapeEntry[] = [...firstRows];
+  const totalPages =
+    Math.min(
+      extractPaginationPages(
+        firstHtml,
+      ),
+      MAX_PAGES,
+    );
 
-  for (let page = 2; page <= cappedMax; page++) {
+  const allRows: LetterboxdScrapeEntry[] =
+    [...firstRows];
+
+  for (
+    let page = 2;
+    page <= totalPages;
+    page++
+  ) {
     await sleep(PAGE_DELAY_MS);
+
+    const url =
+      type === "watchlist"
+        ? watchlistPageUrl(target.username, page)
+        : listPageUrl(target.baseUrl, page);
+
     let res: Response;
+
     try {
-      res = await fetchWatchlistHtml(username, page);
+      res = await fetchHtml(url);
     } catch {
       break;
     }
+
     if (res.status === 429) break;
+
     if (!res.ok) break;
+
     const html = await res.text();
-    if (detectBlockOrChallenge(html)) break;
-    const rows = parseEntriesFromHtml(html);
-    if (rows.length === 0) break;
+
+    if (
+      detectBlockOrChallenge(
+        html,
+      )
+    ) {
+      break;
+    }
+
+    const rows =
+      parseEntriesFromHtml(html);
+
+    if (rows.length === 0) {
+      break;
+    }
+
     allRows.push(...rows);
   }
 
-  const entries = mergeEntries(allRows);
+  let entries =
+    mergeEntries(allRows);
+
+  const originalLength =
+    entries.length;
+
+  /**
+   * MASSIVE LIST PROTECTION
+   */
+  let truncated = false;
+
+  if (
+    entries.length > MAX_MOVIES
+  ) {
+    truncated = true;
+
+    entries = shuffle(entries).slice(
+      0,
+      MAX_MOVIES,
+    );
+  }
 
   if (entries.length === 0) {
     return {
       ok: false,
       code: "empty",
-      message: "No films found on this watchlist (it may be empty).",
+      message:
+        type === "watchlist"
+          ? "No films found in this watchlist."
+          : "No films found in this list.",
     };
   }
 
-  return { ok: true, entries };
+  console.log(
+    `[scraper] ${type}: ${entries.length}/${originalLength} movies`,
+  );
+
+  return {
+    ok: true,
+    source: type,
+    entries,
+    meta: {
+      totalPages,
+      truncated,
+    },
+  };
 }

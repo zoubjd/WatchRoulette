@@ -143,6 +143,21 @@ export function WatchRoulette({ displayFontClass }: WatchRouletteProps) {
       <div
         className={`relative z-10 pb-24 transition-opacity duration-300 ${loading ? "pointer-events-none opacity-[0.15]" : "opacity-100"}`}
       >
+        <motion.div
+          initial={{ opacity: 0, y: -6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45 }}
+          className="relative z-20 border-b border-emerald-500/15 bg-gradient-to-r from-emerald-950/55 via-teal-950/45 to-emerald-950/55 px-4 py-2.5 text-center backdrop-blur-md"
+        >
+          <p className="text-[13px] leading-snug text-emerald-100/90 sm:text-sm">
+            <span className="font-semibold text-emerald-300">New</span>
+            <span className="mx-1.5 text-emerald-500/50" aria-hidden>
+              ·
+            </span>
+            Paste any public Letterboxd curated list — not just your watchlist.
+          </p>
+        </motion.div>
+
         <LandingHero
           displayFontClass={displayFontClass}
           username={username}
